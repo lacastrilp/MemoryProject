@@ -1,47 +1,47 @@
-import os
+from pathlib import Path
 import pandas as pd
-import json
+import threading
+
+usuarios, juegos, recomendaciones = {}, {}, []
 
 def cargar_archivos(carpeta):
-    """Carga todos los archivos CSV y JSON de una carpeta en memoria con porcentaje de progreso."""
-    if not os.path.isdir(carpeta):
+    global usuarios, juegos, recomendaciones
+    carpeta = Path(carpeta)
+    if not carpeta.is_dir():
         print(f"Error: La carpeta '{carpeta}' no existe.")
-        return None, None, None, None
+        return
 
-    usuarios = {}
-    juegos = {}
-    recomendaciones = []
-    metadata = []
-
-    archivos = os.listdir(carpeta)
-    total_archivos = len(archivos)
+    archivos = list(carpeta.glob("*.csv"))  # Filtrar solo archivos CSV
 
     for idx, archivo in enumerate(archivos, start=1):
-        ruta = os.path.join(carpeta, archivo)
-        print(f"Cargando {archivo}... ({idx}/{total_archivos} - {((idx/total_archivos)*100):.2f}%)")
+        print(f"Cargando {archivo.name}... ({idx}/{len(archivos)} - {idx / len(archivos) * 100:.2f}%)")
 
         try:
-            if archivo.endswith("users.csv"):
-                df = pd.read_csv(ruta)
-                usuarios = {row.user_id: {"products": row.products, "reviews": row.reviews} for _, row in df.iterrows()}
-            elif archivo.endswith("games.csv"):
-                df = pd.read_csv(ruta)
-                juegos = {row.app_id: {"title": row.title, "review_score": row.rating, "user_reviews": row.user_reviews}
-                          for _, row in df.iterrows()}
-            elif archivo.endswith("recommendations.csv"):
-                df = pd.read_csv(ruta)
+            df = pd.read_csv(archivo)
+            if "users.csv" in archivo.name:
+                usuarios = df.set_index("user_id").to_dict(orient="index")
+            elif "games.csv" in archivo.name:
+                juegos = df.set_index("app_id").to_dict(orient="index")
+            elif "recommendations.csv" in archivo.name:
                 recomendaciones = df.to_dict(orient="records")
-            elif archivo.endswith("games_metadata.json"):
-                with open(ruta, "r", encoding="utf-8") as f:
-                    metadata = [json.loads(line) for line in f if line.strip()]
         except Exception as e:
-            print(f"Error al procesar {archivo}: {e}")
+            print(f"Error al procesar {archivo.name}: {e}")
 
     print("Archivos cargados correctamente en memoria.")
-    return usuarios, juegos, recomendaciones, metadata
 
-def mostrar_menu(usuarios, juegos, recomendaciones):
-    print("Menú cargado...")
+def mostrar_menu(carpeta):
+    # Iniciar la carga de archivos en un hilo separado
+    hilo_carga = threading.Thread(target=cargar_archivos, args=(carpeta,))
+    hilo_carga.start()
+
+    opciones = {
+        "1": lambda: mostrar_top_juegos(True),
+        "2": lambda: mostrar_top_juegos(False),
+        "3": mostrar_top_usuarios,
+        "4": mostrar_recomendaciones_top_usuarios,
+        "5": exit
+    }
+
     while True:
         print("\nMenú de Opciones:")
         print("1. Mostrar los 10 juegos más recomendados")
@@ -51,42 +51,36 @@ def mostrar_menu(usuarios, juegos, recomendaciones):
         print("5. Salir")
 
         opcion = input("Seleccione una opción: ")
+        opciones.get(opcion, lambda: print("Opción no válida, intente nuevamente."))()
 
-        if opcion == "1":
-            top_juegos = sorted(juegos.items(), key=lambda x: x[1]["user_reviews"], reverse=True)[:10]
-            for app_id, info in top_juegos:
-                print(f"{info['title']} - {info['user_reviews']} recomendaciones")
-        elif opcion == "2":
-            bottom_juegos = sorted(juegos.items(), key=lambda x: x[1]["user_reviews"])[:10]
-            for app_id, info in bottom_juegos:
-                print(f"{info['title']} - {info['user_reviews']} recomendaciones")
-        elif opcion == "3":
-            top_usuarios = sorted(usuarios.items(), key=lambda x: x[1]["reviews"], reverse=True)[:10]
-            for user_id, info in top_usuarios:
-                print(f"Usuario {user_id} - {info['reviews']} recomendaciones")
-        elif opcion == "4":
-            top_usuarios = sorted(usuarios.items(), key=lambda x: x[1]["reviews"], reverse=True)[:10]
-            top_user_ids = {user_id for user_id, _ in top_usuarios}
-            top_recommendations = [r for r in recomendaciones if r["user_id"] in top_user_ids]
-            print("\nJuegos más recomendados por los 10 usuarios principales:")
-            for r in top_recommendations[:10]:
-                status = "✅ Recomendado" if r["is_recommended"] else "❌ No recomendado"
-                print(f"- Juego ID: {r['app_id']} | Horas jugadas: {r['hours']} | Usuario: {r['user_id']} | {status}")
-        elif opcion == "5":
-            print("Saliendo...")
-            break
-        else:
-            print("Opción no válida, intente nuevamente.")
+def mostrar_top_juegos(mas_recomendados=True):
+    if not juegos:
+        print("Los datos de juegos aún no se han cargado.")
+        return
+    top_juegos = sorted(juegos.items(), key=lambda x: x[1]["user_reviews"], reverse=mas_recomendados)[:10]
+    for app_id, info in top_juegos:
+        print(f"{info['title']} - {info['user_reviews']} recomendaciones")
+
+def mostrar_top_usuarios():
+    if not usuarios:
+        print("Los datos de usuarios aún no se han cargado.")
+        return
+    top_usuarios = sorted(usuarios.items(), key=lambda x: x[1]["reviews"], reverse=True)[:10]
+    for user_id, info in top_usuarios:
+        print(f"Usuario {user_id} - {info['reviews']} recomendaciones")
+
+def mostrar_recomendaciones_top_usuarios():
+    if not usuarios or not recomendaciones:
+        print("Los datos de usuarios o recomendaciones aún no se han cargado.")
+        return
+    top_users = {user_id for user_id, _ in sorted(usuarios.items(), key=lambda x: x[1]["reviews"], reverse=True)[:10]}
+    top_recommendations = [r for r in recomendaciones if r["user_id"] in top_users]
+
+    print("\nJuegos más recomendados por los 10 usuarios principales:")
+    for r in top_recommendations[:10]:
+        status = "✅ Recomendado" if r["is_recommended"] else "❌ No recomendado"
+        print(f"- Juego ID: {r['app_id']} | Horas jugadas: {r['hours']} | Usuario: {r['user_id']} | {status}")
 
 # Ejemplo de uso
 carpeta_datos = "C:\\Users\\Alejo\\Documents\\archive"
-usuarios, juegos, recomendaciones, metadata = cargar_archivos(carpeta_datos)
-
-# Verificar si los datos fueron cargados
-print(f"Usuarios cargados: {len(usuarios)}")
-print(f"Juegos cargados: {len(juegos)}")
-print(f"Recomendaciones cargadas: {len(recomendaciones)}")
-print(f"Metadata cargada: {len(metadata)}")
-
-print("Menú cargado...")
-mostrar_menu(usuarios, juegos, recomendaciones)
+mostrar_menu(carpeta_datos)
